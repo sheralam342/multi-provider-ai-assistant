@@ -1,0 +1,6 @@
+streamlit==1.65.0
+python-dotenv
+google-genai
+groq
+huggingface-hub
+requests
