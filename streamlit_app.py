@@ -1,7 +1,20 @@
+import os
 import streamlit as st
 import sqlite3
 
-# Import functions from your existing main.py
+# Load Streamlit Cloud secrets when available
+try:
+    for key in [
+        "GEMINI_API_KEY",
+        "GROQ_API_KEY",
+        "HUGGINGFACE_API_KEY",
+        "OPENROUTER_API_KEY"
+    ]:
+        if key in st.secrets:
+            os.environ[key] = st.secrets[key]
+except Exception:
+    pass
+
 from main import (
     ask_gemini,
     ask_groq,
