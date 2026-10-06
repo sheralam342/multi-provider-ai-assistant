@@ -25,7 +25,15 @@ OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 # DATABASE
 # ============================================================
 
-conn = sqlite3.connect("chat_history.db")
+def get_connection():
+
+    return sqlite3.connect(
+        "chat_history.db",
+        check_same_thread=False
+    )
+
+
+conn = get_connection()
 cursor = conn.cursor()
 
 cursor.execute("""
@@ -45,18 +53,24 @@ cursor.execute("PRAGMA table_info(messages)")
 columns = [column[1] for column in cursor.fetchall()]
 
 if "provider" not in columns:
+
     cursor.execute(
         "ALTER TABLE messages ADD COLUMN provider TEXT"
     )
 
 conn.commit()
 
+conn.close()
 
 # ============================================================
 # SAVE MESSAGE
 # ============================================================
 
 def save_message(provider, role, content):
+
+    conn = get_connection()
+    cursor = conn.cursor()
+
     cursor.execute(
         """
         INSERT INTO messages (provider, role, content)
@@ -66,7 +80,7 @@ def save_message(provider, role, content):
     )
 
     conn.commit()
-
+    conn.close()
 
 # ============================================================
 # CONVERSATION MEMORY
@@ -79,6 +93,10 @@ openrouter_conversation = []
 
 
 def load_conversation():
+
+    # Create a new database connection for this function
+    conn = get_connection()
+    cursor = conn.cursor()
 
     # --------------------------------------------------------
     # Gemini
@@ -97,12 +115,14 @@ def load_conversation():
     for role, content in cursor.fetchall():
 
         if role == "user":
+
             gemini_conversation.append({
                 "role": "user",
                 "parts": [{"text": content}]
             })
 
         elif role == "assistant":
+
             gemini_conversation.append({
                 "role": "model",
                 "parts": [{"text": content}]
@@ -175,9 +195,12 @@ def load_conversation():
         })
 
 
+    # Close this function's database connection
+    conn.close()
+
+
 # Load previous conversations
 load_conversation()
-
 
 # ============================================================
 # GEMINI
@@ -189,8 +212,6 @@ def ask_gemini(question):
         api_key=GEMINI_API_KEY
     )
 
-    # Create temporary conversation.
-    # We only save the question if Gemini succeeds.
     messages = gemini_conversation + [
         {
             "role": "user",
@@ -234,16 +255,11 @@ def ask_gemini(question):
 
             return answer
 
-
         except Exception as e:
 
             error = str(e)
 
-
-            # ------------------------------------------------
             # Gemini temporarily busy
-            # ------------------------------------------------
-
             if "503" in error and attempt < 2:
 
                 wait_time = 2 * (2 ** attempt)
@@ -255,11 +271,7 @@ def ask_gemini(question):
 
                 time.sleep(wait_time)
 
-
-            # ------------------------------------------------
             # Gemini quota exhausted
-            # ------------------------------------------------
-
             elif "429" in error:
 
                 print(
@@ -268,11 +280,7 @@ def ask_gemini(question):
 
                 return None
 
-
-            # ------------------------------------------------
             # Other Gemini error
-            # ------------------------------------------------
-
             else:
 
                 print("\nGemini error:")
@@ -291,7 +299,7 @@ def ask_groq(question):
         api_key=GROQ_API_KEY
     )
 
-    messages = groq_conversation + [
+    messages = groq_conversation[-10:] + [
         {
             "role": "user",
             "content": question
@@ -305,7 +313,6 @@ def ask_groq(question):
 
     answer = response.choices[0].message.content
 
-    # Save only after successful response
     groq_conversation.append({
         "role": "user",
         "content": question
@@ -330,7 +337,6 @@ def ask_groq(question):
 
     return answer
 
-
 # ============================================================
 # HUGGING FACE
 # ============================================================
@@ -341,7 +347,7 @@ def ask_huggingface(question):
         token=HUGGINGFACE_API_KEY
     )
 
-    messages = huggingface_conversation + [
+    messages = huggingface_conversation[-10:] + [
         {
             "role": "user",
             "content": question
@@ -355,7 +361,6 @@ def ask_huggingface(question):
 
     answer = response.choices[0].message.content
 
-    # Save only after successful response
     huggingface_conversation.append({
         "role": "user",
         "content": question
@@ -380,14 +385,13 @@ def ask_huggingface(question):
 
     return answer
 
-
 # ============================================================
 # OPENROUTER
 # ============================================================
 
 def ask_openrouter(question):
 
-    messages = openrouter_conversation + [
+    messages = openrouter_conversation[-10:] + [
         {
             "role": "user",
             "content": question
@@ -421,7 +425,6 @@ def ask_openrouter(question):
 
     answer = data["choices"][0]["message"]["content"]
 
-    # Save only after successful response
     openrouter_conversation.append({
         "role": "user",
         "content": question
@@ -446,7 +449,6 @@ def ask_openrouter(question):
 
     return answer
 
-
 # ============================================================
 # AUTOMATIC FALLBACK
 # ============================================================
@@ -462,6 +464,7 @@ def ask_with_fallback(question):
     answer = ask_gemini(question)
 
     if answer is not None:
+
         return "Gemini", answer
 
 
@@ -477,6 +480,7 @@ def ask_with_fallback(question):
         answer = ask_groq(question)
 
         if answer is not None:
+
             return "Groq", answer
 
     except Exception as e:
@@ -497,6 +501,7 @@ def ask_with_fallback(question):
         answer = ask_huggingface(question)
 
         if answer is not None:
+
             return "Hugging Face", answer
 
     except Exception as e:
@@ -517,6 +522,7 @@ def ask_with_fallback(question):
         answer = ask_openrouter(question)
 
         if answer is not None:
+
             return "OpenRouter", answer
 
     except Exception as e:
@@ -534,6 +540,9 @@ def ask_with_fallback(question):
 
 def display_history():
 
+    conn = get_connection()
+    cursor = conn.cursor()
+
     while True:
 
         cursor.execute(
@@ -550,6 +559,7 @@ def display_history():
 
             print("\nNo saved history found.")
 
+            conn.close()
             return
 
 
@@ -643,6 +653,8 @@ def display_history():
 
 
         if choice == 0:
+
+            conn.close()
             return
 
 
@@ -713,6 +725,7 @@ def display_history():
 
 
             if question_choice == 0:
+
                 break
 
 
@@ -758,161 +771,164 @@ def display_history():
 
 
             if back_choice == "0":
-                return
 
+                conn.close()
+                return
 
 # ============================================================
 # MAIN PROGRAM
 # ============================================================
 
-while True:
-
-    print("\n==============================")
-    print("       MY AI ASSISTANT")
-    print("==============================")
-
-
-    print("\nChoose an AI:")
-
-    print("1. Gemini")
-    print("2. Groq")
-    print("3. Hugging Face")
-    print("4. OpenRouter")
-    print("5. Exit")
-    print("6. View Saved Chat History")
-
-
-    choice = input(
-        "\nEnter your choice: "
-    )
-
-
-    # --------------------------------------------------------
-    # HISTORY
-    # --------------------------------------------------------
-
-    if choice == "6":
-
-        display_history()
-
-        continue
-
-
-    # --------------------------------------------------------
-    # EXIT
-    # --------------------------------------------------------
-
-    if choice == "5":
-
-        print("\nGoodbye!")
-
-        break
-
-
-    # --------------------------------------------------------
-    # INVALID CHOICE
-    # --------------------------------------------------------
-
-    if choice not in [
-        "1",
-        "2",
-        "3",
-        "4"
-    ]:
-
-        print(
-            "\nInvalid choice. "
-            "Please try again."
-        )
-
-        continue
-
-
-    # --------------------------------------------------------
-    # CHAT
-    # --------------------------------------------------------
-
-    print(
-        "\nType 'exit' to return "
-        "to the AI selection menu."
-    )
-
+if __name__ == "__main__":
 
     while True:
 
-        question = input("\nYou: ")
+        print("\n==============================")
+        print("       MY AI ASSISTANT")
+        print("==============================")
 
 
-        if question.lower() == "exit":
+        print("\nChoose an AI:")
+
+        print("1. Gemini")
+        print("2. Groq")
+        print("3. Hugging Face")
+        print("4. OpenRouter")
+        print("5. Exit")
+        print("6. View Saved Chat History")
+
+
+        choice = input(
+            "\nEnter your choice: "
+        )
+
+
+        # ----------------------------------------------------
+        # HISTORY
+        # ----------------------------------------------------
+
+        if choice == "6":
+
+            display_history()
+
+            continue
+
+
+        # ----------------------------------------------------
+        # EXIT
+        # ----------------------------------------------------
+
+        if choice == "5":
+
+            print("\nGoodbye!")
 
             break
 
 
-        try:
+        # ----------------------------------------------------
+        # INVALID CHOICE
+        # ----------------------------------------------------
 
-            # ------------------------------------------------
-            # Gemini + Automatic Fallback
-            # ------------------------------------------------
-
-            if choice == "1":
-
-                provider, answer = ask_with_fallback(
-                    question
-                )
-
-
-            # ------------------------------------------------
-            # Groq
-            # ------------------------------------------------
-
-            elif choice == "2":
-
-                provider = "Groq"
-
-                answer = ask_groq(
-                    question
-                )
-
-
-            # ------------------------------------------------
-            # Hugging Face
-            # ------------------------------------------------
-
-            elif choice == "3":
-
-                provider = "Hugging Face"
-
-                answer = ask_huggingface(
-                    question
-                )
-
-
-            # ------------------------------------------------
-            # OpenRouter
-            # ------------------------------------------------
-
-            else:
-
-                provider = "OpenRouter"
-
-                answer = ask_openrouter(
-                    question
-                )
-
-
-            print("\nAI Response:")
-            print("------------------------------")
+        if choice not in [
+            "1",
+            "2",
+            "3",
+            "4"
+        ]:
 
             print(
-                f"Provider used: {provider}"
+                "\nInvalid choice. "
+                "Please try again."
             )
 
-            print("------------------------------")
-
-            print(answer)
+            continue
 
 
-        except Exception as e:
+        # ----------------------------------------------------
+        # CHAT
+        # ----------------------------------------------------
 
-            print("\nError:")
-            print(e)
+        print(
+            "\nType 'exit' to return "
+            "to the AI selection menu."
+        )
+
+
+        while True:
+
+            question = input("\nYou: ")
+
+
+            if question.lower() == "exit":
+
+                break
+
+
+            try:
+
+                # --------------------------------------------
+                # Gemini + Automatic Fallback
+                # --------------------------------------------
+
+                if choice == "1":
+
+                    provider, answer = ask_with_fallback(
+                        question
+                    )
+
+
+                # --------------------------------------------
+                # Groq
+                # --------------------------------------------
+
+                elif choice == "2":
+
+                    provider = "Groq"
+
+                    answer = ask_groq(
+                        question
+                    )
+
+
+                # --------------------------------------------
+                # Hugging Face
+                # --------------------------------------------
+
+                elif choice == "3":
+
+                    provider = "Hugging Face"
+
+                    answer = ask_huggingface(
+                        question
+                    )
+
+
+                # --------------------------------------------
+                # OpenRouter
+                # --------------------------------------------
+
+                else:
+
+                    provider = "OpenRouter"
+
+                    answer = ask_openrouter(
+                        question
+                    )
+
+
+                print("\nAI Response:")
+                print("------------------------------")
+
+                print(
+                    f"Provider used: {provider}"
+                )
+
+                print("------------------------------")
+
+                print(answer)
+
+
+            except Exception as e:
+
+                print("\nError:")
+                print(e)
