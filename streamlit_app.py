@@ -439,11 +439,17 @@ if question:
 # ============================================================
 
 st.sidebar.divider()
-
 st.sidebar.subheader("💬 Chat Controls")
 
-if st.sidebar.button("🗑️ Clear Current Chat", use_container_width=True):
+if st.sidebar.button("➕ New Chat", use_container_width=True):
+    st.session_state.session_id = str(uuid.uuid4())
+    main.CURRENT_SESSION_ID = st.session_state.session_id
+    st.session_state.messages = []
+    st.session_state.pop("suggested_question", None)
+    main.load_conversation()
+    st.rerun()
 
+if st.sidebar.button("🗑️ Clear Current Chat", use_container_width=True):
     st.session_state.messages = []
     st.session_state.pop("suggested_question", None)
     st.rerun()
