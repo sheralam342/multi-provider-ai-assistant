@@ -454,6 +454,29 @@ if st.sidebar.button("🗑️ Clear Current Chat", use_container_width=True):
     st.session_state.pop("suggested_question", None)
     st.rerun()
 
+# Export Chat
+st.sidebar.divider()
+st.sidebar.subheader("📥 Export Chat")
+
+
+if st.session_state.messages:
+    export_text = ""
+
+    for message in st.session_state.messages:
+        role = "You" if message["role"] == "user" else "AI"
+        export_text += f"{role}:\n{message['content']}\n\n"
+
+    st.sidebar.download_button(
+        label="📄 Download Chat (.txt)",
+        data=export_text,
+        file_name="my_ai_chat.txt",
+        mime="text/plain",
+        use_container_width=True,
+    )
+else:
+    st.sidebar.warning("Send a message before exporting.")
+
+
 
 st.sidebar.subheader("📚 Saved Chat History")
 
