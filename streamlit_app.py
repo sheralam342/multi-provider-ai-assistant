@@ -1,6 +1,8 @@
 import os
 import streamlit as st
 import sqlite3
+import uuid
+import main
 
 # Load Streamlit Cloud secrets when available
 try:
@@ -8,12 +10,22 @@ try:
         "GEMINI_API_KEY",
         "GROQ_API_KEY",
         "HUGGINGFACE_API_KEY",
-        "OPENROUTER_API_KEY"
+        "OPENROUTER_API_KEY",
+        "SUPABASE_URL",
+        "SUPABASE_KEY"
     ]:
         if key in st.secrets:
             os.environ[key] = st.secrets[key]
 except Exception:
     pass
+
+if "session_id" not in st.session_state:
+    st.session_state.session_id = str(uuid.uuid4())
+
+main.CURRENT_SESSION_ID = st.session_state.session_id
+
+main.load_conversation()
+
 
 from main import (
     ask_gemini,
@@ -22,8 +34,6 @@ from main import (
     ask_openrouter,
     ask_with_fallback
 )
-
-
 # ============================================================
 # PAGE SETTINGS
 # ============================================================
@@ -287,50 +297,56 @@ st.sidebar.subheader("📚 Saved Chat History")
 
 if st.sidebar.button("View Saved History"):
 
-    conn = sqlite3.connect(
-        "chat_history.db",
-        check_same_thread=False
-    )
+    try:
+        result = main.supabase.table("messages").select(
+            "provider, role, content, created_at"
+        ).order(
+            "id"
+        ).execute()
 
-    cursor = conn.cursor()
+        rows = result.data
 
-    cursor.execute(
-        """
-        SELECT provider, role, content, created_at
-        FROM messages
-        ORDER BY id DESC
-        """
-    )
-
-    rows = cursor.fetchall()
-
-    conn.close()
-
+    except Exception as e:
+        st.sidebar.error(f"Could not load history: {e}")
+        rows = []
 
     if not rows:
-
-        st.sidebar.info(
-            "No saved history found."
-        )
+        st.sidebar.info("No saved history found.")
 
     else:
+        st.sidebar.markdown("### 💬 Conversations")
 
-        for provider_name, role, content, created_at in rows:
+        current_provider = None
 
-            if provider_name is None:
+        for row in rows:
 
-                provider_name = "Unknown"
+            provider = row.get("provider", "Unknown")
+            role = row.get("role", "Unknown")
+            content = row.get("content", "")
+            created_at = row.get("created_at", "")
 
-            st.sidebar.markdown(
-                f"**{provider_name.title()} — {role}**"
-            )
+            # New provider heading
+            if provider != current_provider:
 
-            st.sidebar.write(
-                content
-            )
+                current_provider = provider
 
-            st.sidebar.caption(
-                created_at
-            )
+                st.sidebar.markdown(
+                    f"### 🤖 {provider.title()}"
+                )
 
+            # User message
+            if role == "user":
+
+                st.sidebar.markdown(
+                    f"**You:** {content}"
+                )
+
+            # AI message
+            elif role == "assistant":
+
+                st.sidebar.markdown(
+                    f"**AI:** {content}"
+                )
+
+            st.sidebar.caption(created_at)
             st.sidebar.divider()

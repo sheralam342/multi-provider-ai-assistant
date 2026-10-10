@@ -2,11 +2,13 @@ from dotenv import load_dotenv
 import os
 import time
 import sqlite3
+import uuid
 
 from google import genai
 from groq import Groq
 from huggingface_hub import InferenceClient
 import requests
+from supabase import create_client
 
 
 # ============================================================
@@ -15,6 +17,13 @@ import requests
 
 load_dotenv()
 
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+
+supabase = None
+
+if SUPABASE_URL and SUPABASE_KEY:
+    supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 HUGGINGFACE_API_KEY = os.getenv("HUGGINGFACE_API_KEY")
@@ -66,8 +75,22 @@ conn.close()
 # SAVE MESSAGE
 # ============================================================
 
-def save_message(provider, role, content):
+CURRENT_SESSION_ID = str(uuid.uuid4())
 
+def save_message(provider, role, content, session_id=None):
+    if session_id is None:
+        session_id = CURRENT_SESSION_ID
+
+    # Save to Supabase when available
+    if supabase and session_id:
+        supabase.table("messages").insert({
+            "provider": provider,
+            "role": role,
+            "content": content,
+            "session_id": session_id
+        }).execute()
+
+    # Always keep local SQLite history too
     conn = get_connection()
     cursor = conn.cursor()
 
@@ -94,7 +117,102 @@ openrouter_conversation = []
 
 def load_conversation():
 
-    # Create a new database connection for this function
+    # Clear old memory first
+    gemini_conversation.clear()
+    groq_conversation.clear()
+    huggingface_conversation.clear()
+    openrouter_conversation.clear()
+
+    # ========================================================
+    # TRY SUPABASE FIRST
+    # ========================================================
+
+    if supabase:
+
+        try:
+
+            query = supabase.table("messages").select(
+                "provider, role, content, session_id"
+            )
+
+            # Streamlit session:
+            # load only this browser session
+            if CURRENT_SESSION_ID:
+
+                query = query.eq(
+                    "session_id",
+                    CURRENT_SESSION_ID
+                )
+
+            # Terminal:
+            # if there is no session ID, load all history
+
+            result = query.order(
+                "id"
+            ).execute()
+
+            rows = result.data
+
+            print(
+                f"Supabase messages loaded: {len(rows)}"
+            )
+
+            for row in rows:
+
+                provider = row.get("provider")
+                role = row.get("role")
+                content = row.get("content")
+
+                if provider == "gemini":
+
+                    if role == "user":
+
+                        gemini_conversation.append({
+                            "role": "user",
+                            "parts": [{"text": content}]
+                        })
+
+                    elif role == "assistant":
+
+                        gemini_conversation.append({
+                            "role": "model",
+                            "parts": [{"text": content}]
+                        })
+
+                elif provider == "groq":
+
+                    groq_conversation.append({
+                        "role": role,
+                        "content": content
+                    })
+
+                elif provider == "huggingface":
+
+                    huggingface_conversation.append({
+                        "role": role,
+                        "content": content
+                    })
+
+                elif provider == "openrouter":
+
+                    openrouter_conversation.append({
+                        "role": role,
+                        "content": content
+                    })
+
+            return
+
+        except Exception as e:
+
+            print("\nSupabase history loading failed:")
+            print(e)
+            print("Using local SQLite history instead.")
+
+
+    # ========================================================
+    # SQLITE FALLBACK
+    # ========================================================
+
     conn = get_connection()
     cursor = conn.cursor()
 
@@ -195,12 +313,12 @@ def load_conversation():
         })
 
 
-    # Close this function's database connection
     conn.close()
 
 
-# Load previous conversations
-load_conversation()
+# Load previous conversations only for terminal mode
+if __name__ == "__main__":
+    load_conversation()
 
 # ============================================================
 # GEMINI
