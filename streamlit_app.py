@@ -448,61 +448,117 @@ if st.sidebar.button("🗑️ Clear Current Chat", use_container_width=True):
     st.session_state.pop("suggested_question", None)
     st.rerun()
 
+
 st.sidebar.subheader("📚 Saved Chat History")
 
+# Keep the history panel open after Streamlit reruns
+if "show_saved_history" not in st.session_state:
+    st.session_state.show_saved_history = False
 
 if st.sidebar.button("View Saved History"):
+    st.session_state.show_saved_history = (
+        not st.session_state.show_saved_history
+    )
+
+if st.session_state.show_saved_history:
 
     try:
-        result = main.supabase.table("messages").select(
-            "provider, role, content, created_at"
-        ).order(
-            "id"
-        ).execute()
+        if main.supabase is None:
+            st.sidebar.warning("Supabase is not connected.")
+            rows = []
+        else:
+            result = main.supabase.table("messages").select(
+                "id, session_id, provider, role, content, created_at"
+            ).order("id").execute()
 
-        rows = result.data
+            rows = result.data or []
 
     except Exception as e:
         st.sidebar.error(f"Could not load history: {e}")
         rows = []
 
-    if not rows:
-        st.sidebar.info("No saved history found.")
+    # Group messages by conversation session
+    conversations = {}
+
+    for row in rows:
+        sid = row.get("session_id")
+
+        if not sid:
+            continue
+
+        if sid not in conversations:
+            conversations[sid] = []
+
+        conversations[sid].append(row)
+
+    # Show newest conversations first
+    session_ids = list(conversations.keys())[::-1]
+
+    if not session_ids:
+        st.sidebar.info(
+            "No resumable conversations found."
+        )
 
     else:
-        st.sidebar.markdown("### 💬 Conversations")
 
-        current_provider = None
+        def conversation_label(sid):
+            messages = conversations[sid]
 
-        for row in rows:
+            first_user = next(
+                (
+                    m for m in messages
+                    if m.get("role") == "user"
+                ),
+                None
+            )
 
-            provider = row.get("provider", "Unknown")
-            role = row.get("role", "Unknown")
-            content = row.get("content", "")
-            created_at = row.get("created_at", "")
+            if first_user:
+                preview = first_user.get("content", "")
+                preview = preview.replace("\n", " ")[:35]
+            else:
+                preview = "Conversation"
 
-            # New provider heading
-            if provider != current_provider:
+            provider_name = next(
+                (
+                    m.get("provider")
+                    for m in messages
+                    if m.get("provider")
+                ),
+                "AI"
+            )
 
-                current_provider = provider
+            return f"{provider_name.title()} — {preview}"
 
-                st.sidebar.markdown(
-                    f"### 🤖 {provider.title()}"
-                )
+        selected_session = st.sidebar.selectbox(
+            "Choose a conversation",
+            options=session_ids,
+            format_func=conversation_label,
+            key="history_session_selector"
+        )
 
-            # User message
-            if role == "user":
+        if st.sidebar.button(
+            "📂 Open Conversation",
+            use_container_width=True
+        ):
 
-                st.sidebar.markdown(
-                    f"**You:** {content}"
-                )
+            selected_rows = conversations[selected_session]
 
-            # AI message
-            elif role == "assistant":
+            # Restore the selected conversation ID
+            st.session_state.session_id = selected_session
+            main.CURRENT_SESSION_ID = selected_session
 
-                st.sidebar.markdown(
-                    f"**AI:** {content}"
-                )
+            # Restore messages in the chat interface
+            st.session_state.messages = [
+                {
+                    "role": row["role"],
+                    "content": row.get("content", "")
+                }
+                for row in selected_rows
+                if row.get("role") in ("user", "assistant")
+            ]
 
-            st.sidebar.caption(created_at)
-            st.sidebar.divider()
+            # Reload provider-specific AI conversation memory
+            main.load_conversation()
+
+            st.sidebar.success("Conversation opened!")
+            st.rerun()
