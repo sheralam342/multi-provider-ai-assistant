@@ -3,6 +3,7 @@ import streamlit as st
 import sqlite3
 import uuid
 import main
+from streamlit_mic_recorder import mic_recorder
 
 # Professional UI styling
 st.markdown("""
@@ -239,202 +240,187 @@ for message in st.session_state.messages:
 
 
 # ============================================================
-# USER INPUT
+# CHAT INPUT AND AI RESPONSE
 # ============================================================
 
-
-typed_question = st.chat_input("Ask your question...")
-
-suggested_question = st.session_state.pop(
-    "suggested_question", None
-)
-
-question = typed_question or suggested_question
+# Initialize chat state
+if "messages" not in st.session_state:
+    st.session_state.messages = []
 
 
+# ------------------------------------------------------------
+# Submit typed questions
+# ------------------------------------------------------------
+
+def submit_text_question():
+    text = st.session_state.get("chat_text_input", "").strip()
+
+    if text:
+        st.session_state["pending_question"] = text
+        st.session_state["chat_text_input"] = ""
+
+
+# ------------------------------------------------------------
+# Process a submitted question BEFORE displaying chat history
+# ------------------------------------------------------------
+
+question = st.session_state.pop("pending_question", None)
 
 if question:
 
-    # --------------------------------------------------------
-    # Display user message
-    # --------------------------------------------------------
-
+    # Save the user's message
     st.session_state.messages.append({
         "role": "user",
-        "content": question
+        "content": question,
     })
 
-    with st.chat_message("user"):
+    answer = None
+    provider_used = provider
 
-        st.write(question)
-
-
-    # --------------------------------------------------------
-    # Get AI response
-    # --------------------------------------------------------
-
-    with st.chat_message("assistant"):
-
+    try:
         with st.spinner("Thinking..."):
 
-            try:
+            # Gemini + Automatic Fallback
+            if provider == "Gemini + Automatic Fallback":
+                provider_used, answer = ask_with_fallback(question)
 
-                # =================================================
-                # GEMINI + AUTOMATIC FALLBACK
-                # =================================================
+            # Gemini
+            elif provider == "Gemini":
+                answer = ask_gemini(question)
 
-                if provider == "Gemini + Automatic Fallback":
+            # Groq
+            elif provider == "Groq":
+                answer = ask_groq(question)
 
-                    provider_used, answer = ask_with_fallback(
-                        question
+            # Hugging Face
+            elif provider == "Hugging Face":
+                answer = ask_huggingface(question)
+
+            # OpenRouter
+            elif provider == "OpenRouter":
+                answer = ask_openrouter(question)
+
+            else:
+                answer = "Unknown AI provider selected."
+
+    except Exception as e:
+        answer = f"Error: {e}"
+
+    # Save the assistant response
+    if answer is None:
+        if provider == "Gemini + Automatic Fallback":
+            answer = "All AI providers are currently unavailable."
+        else:
+            answer = f"{provider} did not return a response."
+
+    st.session_state.messages.append({
+        "role": "assistant",
+        "content": answer,
+        "provider": provider_used,
+    })
+
+
+# ------------------------------------------------------------
+# Display ALL messages above the input row
+# ------------------------------------------------------------
+
+for message in st.session_state.messages:
+
+    with st.chat_message(message["role"]):
+
+        if message["role"] == "assistant":
+            provider_name = message.get("provider")
+
+            if provider_name:
+                st.caption(f"Provider used: {provider_name}")
+
+        st.write(message["content"])
+
+
+# ------------------------------------------------------------
+# Input row at the bottom of the chat
+# ------------------------------------------------------------
+
+mic_col, text_col, send_col = st.columns([1.2, 6, 0.8])
+
+with mic_col:
+    audio = mic_recorder(
+        start_prompt="🎤",
+        stop_prompt="⏹️",
+        key="voice_input",
+        just_once=True,
+    )
+
+with text_col:
+    st.text_input(
+        "Message",
+        placeholder="Ask your question...",
+        key="chat_text_input",
+        label_visibility="collapsed",
+        on_change=submit_text_question,
+    )
+
+with send_col:
+    st.button(
+        "➤",
+        key="send_question",
+        on_click=submit_text_question,
+        use_container_width=True,
+    )
+
+
+# ------------------------------------------------------------
+# Voice transcription using Groq
+# ------------------------------------------------------------
+
+if audio and audio.get("bytes"):
+
+    audio_id = audio.get("id")
+
+    if audio_id and audio_id != st.session_state.get(
+        "last_transcribed_audio_id"
+    ):
+
+        st.session_state["last_transcribed_audio_id"] = audio_id
+
+        try:
+            groq_api_key = os.getenv("GROQ_API_KEY")
+
+            if not groq_api_key:
+                st.error(
+                    "Please configure GROQ_API_KEY in your .env file."
+                )
+
+            else:
+                from groq import Groq
+
+                with st.spinner("Converting speech to text..."):
+
+                    client = Groq(api_key=groq_api_key)
+
+                    transcription = client.audio.transcriptions.create(
+                        file=(
+                            "voice_input.wav",
+                            audio["bytes"],
+                            "audio/wav",
+                        ),
+                        model="whisper-large-v3-turbo",
+                        response_format="json",
                     )
 
-                    if provider_used is None:
+                voice_question = transcription.text.strip()
 
-                        st.error(
-                            "All AI providers are currently unavailable."
-                        )
-
-                    else:
-
-                        st.caption(
-                            f"Provider used: {provider_used}"
-                        )
-
-                        st.write(answer)
-
-                        st.session_state.messages.append({
-                            "role": "assistant",
-                            "content": answer
-                        })
-
-
-                # =================================================
-                # GEMINI
-                # =================================================
-
-                elif provider == "Gemini":
-
-                    answer = ask_gemini(
-                        question
-                    )
-
-                    if answer is None:
-
-                        st.error(
-                            "Gemini is currently unavailable. "
-                            "Try Gemini + Automatic Fallback."
-                        )
-
-                    else:
-
-                        st.caption(
-                            "Provider used: Gemini"
-                        )
-
-                        st.write(answer)
-
-                        st.session_state.messages.append({
-                            "role": "assistant",
-                            "content": answer
-                        })
-
-
-                # =================================================
-                # GROQ
-                # =================================================
-
-                elif provider == "Groq":
-
-                    answer = ask_groq(
-                        question
-                    )
-
-                    if answer is None:
-
-                        st.error(
-                            "Groq did not return a response."
-                        )
-
-                    else:
-
-                        st.caption(
-                            "Provider used: Groq"
-                        )
-
-                        st.write(answer)
-
-                        st.session_state.messages.append({
-                            "role": "assistant",
-                            "content": answer
-                        })
-
-
-                # =================================================
-                # HUGGING FACE
-                # =================================================
-
-                elif provider == "Hugging Face":
-
-                    answer = ask_huggingface(
-                        question
-                    )
-
-                    if answer is None:
-
-                        st.error(
-                            "Hugging Face did not return a response."
-                        )
-
-                    else:
-
-                        st.caption(
-                            "Provider used: Hugging Face"
-                        )
-
-                        st.write(answer)
-
-                        st.session_state.messages.append({
-                            "role": "assistant",
-                            "content": answer
-                        })
-
-
-                # =================================================
-                # OPENROUTER
-                # =================================================
+                if voice_question:
+                    st.session_state["pending_question"] = voice_question
+                    st.rerun()
 
                 else:
-
-                    answer = ask_openrouter(
-                        question
+                    st.warning(
+                        "No speech detected. Please try again."
                     )
 
-                    if answer is None:
-
-                        st.error(
-                            "OpenRouter did not return a response."
-                        )
-
-                    else:
-
-                        st.caption(
-                            "Provider used: OpenRouter"
-                        )
-
-                        st.write(answer)
-
-                        st.session_state.messages.append({
-                            "role": "assistant",
-                            "content": answer
-                        })
-
-
-            except Exception as e:
-
-                st.error(
-                    f"Error: {e}"
-                )
+        except Exception as e:
+            st.error(f"Voice input failed: {e}")
 
 
 # ============================================================
@@ -476,6 +462,95 @@ if st.session_state.messages:
         use_container_width=True,
     )
 
+
+# Search saved chat history
+st.sidebar.divider()
+st.sidebar.subheader("🔎 Search Chat History")
+
+search_query = st.sidebar.text_input(
+    "Search your conversations",
+    placeholder="e.g. Python, Gemini, cybersecurity",
+    key="history_search_query",
+)
+
+if search_query.strip():
+
+    try:
+        if main.supabase is None:
+            st.sidebar.warning("Supabase is not connected.")
+        else:
+            search_result = (
+                main.supabase.table("messages")
+                .select("id, session_id, provider, role, content, created_at")
+                .ilike("content", f"%{search_query.strip()}%")
+                .order("id", desc=True)
+                .limit(100)
+                .execute()
+            )
+
+            matching_rows = search_result.data or []
+
+            if not matching_rows:
+                st.sidebar.info("No matching messages found.")
+            else:
+                matching_sessions = list(dict.fromkeys(
+                    row["session_id"]
+                    for row in matching_rows
+                    if row.get("session_id")
+                ))
+
+                st.sidebar.caption(
+                    f"Found {len(matching_sessions)} matching conversations"
+                )
+
+                for index, sid in enumerate(matching_sessions):
+                    matching_message = next(
+                        (
+                            row for row in matching_rows
+                            if row.get("session_id") == sid
+                        ),
+                        None,
+                    )
+
+                    preview = (
+                        matching_message.get("content", "")
+                        if matching_message else "Conversation"
+                    )
+                    preview = preview.replace("\n", " ")[:45]
+
+                    if st.sidebar.button(
+                        f"💬 {preview}",
+                        key=f"search_chat_{index}_{sid}",
+                        use_container_width=True,
+                    ):
+                        full_chat = (
+                            main.supabase.table("messages")
+                            .select(
+                                "id, session_id, provider, role, content, created_at"
+                            )
+                            .eq("session_id", sid)
+                            .order("id")
+                            .execute()
+                        )
+
+                        st.session_state.session_id = sid
+                        main.CURRENT_SESSION_ID = sid
+
+                        st.session_state.messages = [
+                            {
+                                "role": row["role"],
+                                "content": row.get("content", ""),
+                                "provider": row.get("provider"),
+                            }
+                            for row in (full_chat.data or [])
+                            if row.get("role") in ("user", "assistant")
+                        ]
+
+                        main.load_conversation()
+                        st.rerun()
+
+    except Exception as e:
+        st.sidebar.error(f"Search failed: {e}")
 
 st.sidebar.subheader("📚 Saved Chat History")
 
