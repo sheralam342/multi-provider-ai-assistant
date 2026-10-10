@@ -5,3 +5,4 @@ groq
 huggingface-hub
 requests
 supabase
+streamlit-mic-recorder
