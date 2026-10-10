@@ -168,9 +168,12 @@ provider_info = {
     "OpenRouter": "Access AI models through OpenRouter"
 }
 
-st.sidebar.info(
-    f"**Selected Provider:** {provider}\n\n"
+st.sidebar.markdown(
+    f"<div style='font-size:12px; line-height:1.3;'>"
+    f"<b>Selected Provider:</b> {provider}<br>"
     f"{provider_info[provider]}"
+    f"</div>",
+    unsafe_allow_html=True
 )
 
 
@@ -455,11 +458,10 @@ if st.sidebar.button("🗑️ Clear Current Chat", use_container_width=True):
     st.rerun()
 
 # Export Chat
-st.sidebar.divider()
-st.sidebar.subheader("📥 Export Chat")
-
-
 if st.session_state.messages:
+    st.sidebar.divider()
+    st.sidebar.subheader("📥 Export Chat")
+
     export_text = ""
 
     for message in st.session_state.messages:
@@ -473,9 +475,6 @@ if st.session_state.messages:
         mime="text/plain",
         use_container_width=True,
     )
-else:
-    st.sidebar.warning("Send a message before exporting.")
-
 
 
 st.sidebar.subheader("📚 Saved Chat History")
