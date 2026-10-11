@@ -1,9 +1,102 @@
+
 import os
 import streamlit as st
 import sqlite3
 import uuid
-import main
 from streamlit_mic_recorder import mic_recorder
+
+# Configure the page before displaying anything
+st.set_page_config(
+    page_title="My AI Assistant",
+    page_icon="🤖",
+    layout="wide"
+)
+
+# Load Streamlit Cloud secrets BEFORE importing main
+try:
+    for key in [
+        "GEMINI_API_KEY",
+        "GROQ_API_KEY",
+        "HUGGINGFACE_API_KEY",
+        "OPENROUTER_API_KEY",
+        "SUPABASE_URL",
+        "SUPABASE_KEY"
+    ]:
+        if key in st.secrets:
+            os.environ[key] = st.secrets[key]
+except Exception:
+    pass
+
+import main
+
+# ============================================================
+# SUPABASE USER LOGIN
+# ============================================================
+
+if "auth_user" not in st.session_state:
+    st.session_state.auth_user = None
+
+if "auth_token" not in st.session_state:
+    st.session_state.auth_token = None
+
+if "auth_refresh_token" not in st.session_state:
+    st.session_state.auth_refresh_token = None
+
+if main.get_user_supabase() is None:
+    st.error("Supabase is not configured. Please check your secrets.")
+    st.stop()
+
+if st.session_state.auth_user is None:
+    st.title("🔐 Sign in to My AI Assistant")
+
+    login_email = st.text_input("Email address", key="login_email")
+    login_password = st.text_input(
+        "Password", type="password", key="login_password"
+    )
+
+    if st.button("Sign In"):
+        try:
+            # Use a separate client for login so different users do not
+            # share one Supabase Auth session.
+            auth_client = main.create_client(
+                main.SUPABASE_URL,
+                main.SUPABASE_KEY
+            )
+            auth_response = auth_client.auth.sign_in_with_password({
+                "email": login_email.strip(),
+                "password": login_password,
+            })
+
+            st.session_state.auth_user_id = str(auth_response.user.id)
+            st.session_state.auth_user_email = auth_response.user.email
+            st.session_state.auth_token = auth_response.session.access_token
+            st.session_state.auth_refresh_token = auth_response.session.refresh_token
+            st.session_state.auth_user = True
+            st.rerun()
+
+        except Exception:
+            st.error("Sign-in failed. Check your email and password.")
+
+    st.stop()
+
+# Keep a separate chat session ID for this signed-in browser session.
+if "session_id" not in st.session_state:
+    st.session_state.session_id = str(uuid.uuid4())
+
+# Establish the per-user database context on every Streamlit rerun.
+main.set_user_context(
+    st.session_state.get("auth_user_id"),
+    st.session_state.get("auth_token"),
+    st.session_state.session_id,
+)
+
+from main import (
+    ask_gemini,
+    ask_groq,
+    ask_huggingface,
+    ask_openrouter,
+    ask_with_fallback,
+)
 
 # Professional UI styling
 st.markdown("""
@@ -71,47 +164,6 @@ st.markdown("""
     }
 </style>
 """, unsafe_allow_html=True)
-
-
-# Load Streamlit Cloud secrets when available
-try:
-    for key in [
-        "GEMINI_API_KEY",
-        "GROQ_API_KEY",
-        "HUGGINGFACE_API_KEY",
-        "OPENROUTER_API_KEY",
-        "SUPABASE_URL",
-        "SUPABASE_KEY"
-    ]:
-        if key in st.secrets:
-            os.environ[key] = st.secrets[key]
-except Exception:
-    pass
-
-if "session_id" not in st.session_state:
-    st.session_state.session_id = str(uuid.uuid4())
-
-main.CURRENT_SESSION_ID = st.session_state.session_id
-
-main.load_conversation()
-
-
-from main import (
-    ask_gemini,
-    ask_groq,
-    ask_huggingface,
-    ask_openrouter,
-    ask_with_fallback
-)
-# ============================================================
-# PAGE SETTINGS
-# ============================================================
-
-st.set_page_config(
-    page_title="My AI Assistant",
-    page_icon="🤖",
-    layout="wide"
-)
 
 
 # ============================================================
@@ -427,12 +479,28 @@ if audio and audio.get("bytes"):
 # DATABASE HISTORY
 # ============================================================
 
+st.sidebar.caption(
+    f"Signed in as: {st.session_state.get('auth_user_email', 'user')}"
+)
+if st.sidebar.button("Sign Out", use_container_width=True):
+    st.session_state.auth_user = None
+    st.session_state.auth_user_id = None
+    st.session_state.auth_token = None
+    st.session_state.auth_refresh_token = None
+    st.session_state.messages = []
+    st.rerun()
+
 st.sidebar.divider()
 st.sidebar.subheader("💬 Chat Controls")
 
 if st.sidebar.button("➕ New Chat", use_container_width=True):
     st.session_state.session_id = str(uuid.uuid4())
-    main.CURRENT_SESSION_ID = st.session_state.session_id
+    main.set_current_session_id(st.session_state.session_id)
+    main.set_user_context(
+        st.session_state.get("auth_user_id"),
+        st.session_state.get("auth_token"),
+        st.session_state.session_id,
+    )
     st.session_state.messages = []
     st.session_state.pop("suggested_question", None)
     main.load_conversation()
@@ -476,11 +544,11 @@ search_query = st.sidebar.text_input(
 if search_query.strip():
 
     try:
-        if main.supabase is None:
+        if main.get_user_supabase() is None:
             st.sidebar.warning("Supabase is not connected.")
         else:
             search_result = (
-                main.supabase.table("messages")
+                main.get_user_supabase().table("messages")
                 .select("id, session_id, provider, role, content, created_at")
                 .ilike("content", f"%{search_query.strip()}%")
                 .order("id", desc=True)
@@ -524,7 +592,7 @@ if search_query.strip():
                         use_container_width=True,
                     ):
                         full_chat = (
-                            main.supabase.table("messages")
+                            main.get_user_supabase().table("messages")
                             .select(
                                 "id, session_id, provider, role, content, created_at"
                             )
@@ -534,7 +602,12 @@ if search_query.strip():
                         )
 
                         st.session_state.session_id = sid
-                        main.CURRENT_SESSION_ID = sid
+                        main.set_current_session_id(sid)
+                        main.set_user_context(
+                            st.session_state.get("auth_user_id"),
+                            st.session_state.get("auth_token"),
+                            sid,
+                        )
 
                         st.session_state.messages = [
                             {
@@ -566,11 +639,11 @@ if st.sidebar.button("View Saved History"):
 if st.session_state.show_saved_history:
 
     try:
-        if main.supabase is None:
+        if main.get_user_supabase() is None:
             st.sidebar.warning("Supabase is not connected.")
             rows = []
         else:
-            result = main.supabase.table("messages").select(
+            result = main.get_user_supabase().table("messages").select(
                 "id, session_id, provider, role, content, created_at"
             ).order("id").execute()
 
@@ -648,7 +721,12 @@ if st.session_state.show_saved_history:
 
             # Restore the selected conversation ID
             st.session_state.session_id = selected_session
-            main.CURRENT_SESSION_ID = selected_session
+            main.set_current_session_id(selected_session)
+            main.set_user_context(
+                st.session_state.get("auth_user_id"),
+                st.session_state.get("auth_token"),
+                selected_session,
+            )
 
             # Restore messages in the chat interface
             st.session_state.messages = [

@@ -3,6 +3,7 @@ import os
 import time
 import sqlite3
 import uuid
+import contextvars
 
 from google import genai
 from groq import Groq
@@ -20,10 +21,45 @@ load_dotenv()
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
+
 supabase = None
+
+# Per-request context: each Streamlit user gets their own database client,
+# user ID, and chat session ID. This avoids sharing auth state across users.
+_user_id_context = contextvars.ContextVar("current_user_id", default=None)
+_access_token_context = contextvars.ContextVar("current_access_token", default=None)
+_user_supabase_context = contextvars.ContextVar("current_user_supabase", default=None)
+_session_id_context = contextvars.ContextVar("current_session_id", default=None)
 
 if SUPABASE_URL and SUPABASE_KEY:
     supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+def set_user_context(user_id, access_token, session_id):
+    """Set an isolated authenticated Supabase client for this Streamlit run."""
+    client = None
+    if SUPABASE_URL and SUPABASE_KEY and user_id and access_token:
+        client = create_client(SUPABASE_URL, SUPABASE_KEY)
+        # Send the signed-in user's JWT with every PostgREST request.
+        client.postgrest.auth(access_token)
+
+    _user_id_context.set(str(user_id) if user_id else None)
+    _access_token_context.set(access_token)
+    _user_supabase_context.set(client)
+    _session_id_context.set(session_id)
+
+def set_current_session_id(session_id):
+    """Update the chat session ID for the current Streamlit user."""
+    _session_id_context.set(session_id)
+
+def get_user_id():
+    return _user_id_context.get()
+
+def get_user_supabase():
+    """Return this user's authenticated client, or the base client for CLI mode."""
+    return _user_supabase_context.get() or supabase
+
+def get_current_session_id():
+    return _session_id_context.get() or CURRENT_SESSION_ID
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 HUGGINGFACE_API_KEY = os.getenv("HUGGINGFACE_API_KEY")
@@ -79,11 +115,16 @@ CURRENT_SESSION_ID = str(uuid.uuid4())
 
 def save_message(provider, role, content, session_id=None):
     if session_id is None:
-        session_id = CURRENT_SESSION_ID
+        session_id = get_current_session_id()
 
-    # Save to Supabase when available
-    if supabase and session_id:
-        supabase.table("messages").insert({
+    user_id = get_user_id()
+    db_client = get_user_supabase()
+
+    # Save to Supabase only when there is an authenticated user.
+    # RLS will independently verify that auth.uid() owns this user_id.
+    if db_client and user_id and session_id:
+        db_client.table("messages").insert({
+            "user_id": user_id,
             "provider": provider,
             "role": role,
             "content": content,
@@ -127,29 +168,26 @@ def load_conversation():
     # TRY SUPABASE FIRST
     # ========================================================
 
-    if supabase:
+    db_client = get_user_supabase()
+    active_user_id = get_user_id()
+    active_session_id = get_current_session_id()
+
+    if db_client:
 
         try:
 
-            query = supabase.table("messages").select(
+            query = db_client.table("messages").select(
                 "provider, role, content, session_id"
             )
 
-            # Streamlit session:
-            # load only this browser session
-            if CURRENT_SESSION_ID:
+            # A signed-in web user can only load their own messages.
+            if active_user_id:
+                query = query.eq("user_id", active_user_id)
 
-                query = query.eq(
-                    "session_id",
-                    CURRENT_SESSION_ID
-                )
+            if active_session_id:
+                query = query.eq("session_id", active_session_id)
 
-            # Terminal:
-            # if there is no session ID, load all history
-
-            result = query.order(
-                "id"
-            ).execute()
+            result = query.order("id").execute()
 
             rows = result.data
 
@@ -206,8 +244,10 @@ def load_conversation():
 
             print("\nSupabase history loading failed:")
             print(e)
+            if active_user_id:
+                # Never fall back to shared local history for a web user.
+                return
             print("Using local SQLite history instead.")
-
 
     # ========================================================
     # SQLITE FALLBACK
